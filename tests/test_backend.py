@@ -142,6 +142,48 @@ def test_real_still_is_preferred(monkeypatch):
     assert response.content == b"\xff\xd8\xff\xe0fake-jpeg"
 
 
+def test_episode_titles_uses_kitsu_when_anilist_has_none(monkeypatch):
+    media = fake_media(idMal=61990, streaming=[])
+    monkeypatch.setattr(server, "_anilist_art_media", lambda _: media)
+    monkeypatch.setattr(server, "_kitsu_anime_id", lambda _: 50016)
+    monkeypatch.setattr(
+        server,
+        "_kitsu_episodes",
+        lambda _: {
+            1: {
+                "number": 1,
+                "title": "Last Chance for a Slow Dance",
+                "url": "",
+            }
+        },
+    )
+
+    response = client.get("/api/episode-titles?anilistId=195539")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["titles"] == {"1": "Last Chance for a Slow Dance"}
+    assert body["sources"] == ["kitsu"]
+
+
+def test_episode_titles_cleans_numbered_anilist_titles(monkeypatch):
+    media = fake_media(
+        streaming=[
+            {"number": 2, "title": "Episode 2 - Give Me Another Day"},
+        ]
+    )
+    monkeypatch.setattr(server, "_anilist_art_media", lambda _: media)
+    monkeypatch.setattr(server, "_kitsu_anime_id", lambda _: None)
+
+    response = client.get("/api/episode-titles?anilistId=195539")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["titles"] == {"2": "Give Me Another Day"}
+    assert body["sources"] == ["anilist"]
+    assert server._clean_episode_title("Episode 1", 1) == ""
+
+
 def test_svg_is_not_accepted_as_remote_image():
     assert server._sniff_image_type(b"<svg></svg>", "image/svg+xml") is None
 

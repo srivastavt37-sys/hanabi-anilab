@@ -86,7 +86,33 @@ Open these directly:
 `185874` is Bleach TYBW: generated cards. `16498` is Attack on Titan: real
 AniList still. `195539` episode 1 is a Kitsu still; episode 2 is generated.
 
-## 2. Skip intro/outro
+## 2. Episode titles
+
+```http
+GET /api/episode-titles?anilistId=<id>
+```
+
+- Returns `titles` keyed by episode number and a `sources` array.
+- AniList `streamingEpisodes` titles are preferred when they contain a real
+  title; Kitsu episode titles fill missing entries.
+- Placeholder titles such as `Episode 1` are omitted, so clients should keep a
+  numbered fallback.
+- Cached for 6 hours.
+
+Example:
+
+```json
+{
+  "anilistId": 195539,
+  "titles": {
+    "1": "Last Chance for a Slow Dance",
+    "2": "Give Me Another Day"
+  },
+  "sources": ["kitsu"]
+}
+```
+
+## 3. Skip intro/outro
 
 ```http
 GET /api/skip-times?anilistId=<id>&episode=<n>&duration=<seconds>

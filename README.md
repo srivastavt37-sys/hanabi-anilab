@@ -76,6 +76,7 @@ python -m pytest tests -q
 | `GET /api/anilab/home`, `/categories`, `/category` | Catalogue helpers |
 | `GET /api/skip-times?anilistId=&episode=&duration=` | Intro/outro timestamps (AniSkip + local overrides) |
 | `GET /api/episode-image?anilistId=&episode=&width=` | Per-episode thumbnail (real still or generated fallback) |
+| `GET /api/episode-titles?anilistId=` | Episode titles (AniList streaming data + Kitsu fallback) |
 | `GET /api/watch?m3u8=` | Standalone debug player page |
 
 Metadata responses are cached briefly in memory; stream lookups are cached for
@@ -145,10 +146,20 @@ generated fallback; real stills are served at source resolution.
 `X-Image-Source` reports `anilist`, `kitsu`, or `generated`. Responses are
 cached for 24 hours.
 
+### Episode titles
+
+`GET /api/episode-titles?anilistId=195539`
+
+Returns `{ "titles": { "1": "Last Chance for a Slow Dance", ... }, "sources": ["kitsu"] }`.
+AniList `streamingEpisodes` titles are preferred when they contain a real title;
+Kitsu episode titles fill the gaps. Numbered placeholders such as `Episode 1`
+are omitted. Responses are cached for 6 hours.
+
 ## Deploying to Render
 
-The repo ships a multi-stage `Dockerfile` (build Vite → serve with Uvicorn) and a
-`render.yaml` blueprint.
+The repo ships a backend-only `Dockerfile` and a `render.yaml` blueprint. The
+image contains only `server.py`, `requirements.txt`, and `skip_times.json`; no
+frontend is built or served.
 
 - **Runtime:** Docker
 - **Health check path:** `/api/health`
@@ -161,8 +172,8 @@ docker build -t hanabi-anilab .
 docker run -p 10000:10000 -e PORT=10000 hanabi-anilab
 ```
 
-Then open http://localhost:10000 — the SPA and the API are served from the same
-origin, so no CORS configuration is required.
+Then call http://localhost:10000/api/health. The API root returns 404 by design;
+clients use `/api/*`.
 
 ## Project layout
 

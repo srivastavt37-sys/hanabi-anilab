@@ -751,6 +751,28 @@ def _episode_number_from_title(value, fallback: int) -> int:
     return fallback
 
 
+def _clean_episode_title(value, number: int | None = None) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"^\s*(?:episode|ep\.?)\s*#?\s*\d+\s*[-–—:.]?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"^\s*\d+\s*[-–—:.]\s*", "", text)
+    if not text:
+        return ""
+    if re.fullmatch(r"(?:episode|ep\.?)\s*#?\s*\d+", text, flags=re.IGNORECASE):
+        return ""
+    if number is not None:
+        normalized = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+        if normalized in {f"episode {number}", f"ep {number}"}:
+            return ""
+    return text[:200]
+
+
 def _anilist_art_media(anilist_id: int) -> dict:
     cache_key = f"anilist:art:{anilist_id}"
     cached = cache_get(cache_key)
@@ -844,12 +866,12 @@ def _kitsu_anime_id(mal_id: int) -> int | None:
     return kitsu_id
 
 
-def _kitsu_episode_stills(kitsu_id: int) -> dict:
-    cache_key = f"kitsu:episodes:{kitsu_id}"
+def _kitsu_episodes(kitsu_id: int) -> dict:
+    cache_key = f"kitsu:episodes:v2:{kitsu_id}"
     cached = cache_get(cache_key)
     if isinstance(cached, dict):
         return cached
-    stills = {}
+    episodes = {}
     url = f"{KITSU_API}/anime/{kitsu_id}/episodes"
     params = {"page[limit]": "20", "sort": "number"}
     for _ in range(10):
@@ -880,12 +902,14 @@ def _kitsu_episode_stills(kitsu_id: int) -> dict:
                 or thumbnail.get("medium")
                 or thumbnail.get("original")
             )
-            if not image:
-                continue
-            stills[number] = {
+            titles = attributes.get("titles")
+            title = attributes.get("canonicalTitle") or (
+                titles.get("en") if isinstance(titles, dict) else ""
+            )
+            episodes[number] = {
                 "number": number,
-                "url": image,
-                "title": attributes.get("canonicalTitle") or "",
+                "url": image or "",
+                "title": title or "",
                 "site": "Kitsu",
                 "source": "kitsu",
             }
@@ -893,8 +917,16 @@ def _kitsu_episode_stills(kitsu_id: int) -> dict:
         if not next_url:
             break
         url, params = next_url, None
-    cache_set(cache_key, stills, 6 * 3600)
-    return stills
+    cache_set(cache_key, episodes, 6 * 3600)
+    return episodes
+
+
+def _kitsu_episode_stills(kitsu_id: int) -> dict:
+    return {
+        number: item
+        for number, item in _kitsu_episodes(kitsu_id).items()
+        if item.get("url")
+    }
 
 
 def _episode_still_candidates(media: dict, episode: int):
@@ -1019,6 +1051,49 @@ def episode_image(anilistId: int, episode: int = 1, width: int = 480):
     payload = _episode_placeholder(media, episode, width)
     _art_set(cache_key, payload)
     return _image_response(payload)
+
+
+@app.get("/api/episode-titles")
+def episode_titles(anilistId: int):
+    if not (1 <= anilistId <= 1_000_000_000):
+        raise HTTPException(status_code=400, detail="anilistId is out of range")
+    cache_key = f"episode-titles:{anilistId}"
+    cached = cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    media = _anilist_art_media(anilistId)
+    titles: dict[str, str] = {}
+    sources: set[str] = set()
+
+    for item in media.get("streaming") or []:
+        number = item.get("number")
+        if not isinstance(number, int):
+            continue
+        title = _clean_episode_title(item.get("title"), number)
+        if title:
+            titles[str(number)] = title
+            sources.add("anilist")
+
+    mal_id = media.get("idMal")
+    if mal_id:
+        kitsu_id = _kitsu_anime_id(int(mal_id))
+        if kitsu_id:
+            for number, item in _kitsu_episodes(kitsu_id).items():
+                if str(number) in titles:
+                    continue
+                title = _clean_episode_title(item.get("title"), number)
+                if title:
+                    titles[str(number)] = title
+                    sources.add("kitsu")
+
+    result = {
+        "anilistId": anilistId,
+        "titles": titles,
+        "sources": sorted(sources),
+    }
+    cache_set(cache_key, result, 6 * 3600)
+    return result
 
 
 # Legacy aliases kept for parity with the original GengaToon API.
