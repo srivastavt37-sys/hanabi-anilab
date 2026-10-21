@@ -1,40 +1,38 @@
-# Backend handoff: skip intro/outro + per-episode thumbnails
+# Backend handoff: API for phone, PC, and TV clients
 
-Backend is live. No UI files were changed by the backend agent.
+The backend is deployed API-only. No web UI is served in production; the old
+web UI source remains in the repo for reference only.
 
 ## Backend status
 
+- Production API: `https://hanabi-anilab.onrender.com`
+- API docs: `https://hanabi-anilab.onrender.com/docs`
+- Health: `https://hanabi-anilab.onrender.com/api/health`
 - 10 backend tests pass: `python -m pytest tests -q`.
+- Docker image builds and runs on Render; the image contains only the API
+  (`server.py`, `requirements.txt`, `skip_times.json`), not the frontend.
 - Backend files are mirrored into the OneDrive copy.
-- Production deploy still needs a GitHub repository and Render; Docker was not
-  available locally to pre-build the image.
+- Repo: `https://github.com/srivastavt37-sys/hanabi-anilab`
+- Supabase Auth Site URL is set to the Render URL; localhost origins are kept
+  for development.
+- Render free plan may cold-start after inactivity.
 
 ## Base URL
 
-- Gateway: `http://127.0.0.1:3000`
+- Production: `https://hanabi-anilab.onrender.com`
+- Local gateway: `http://127.0.0.1:3000`
 - Tunnel: `https://national-ampland-income-companion.trycloudflare.com`
 - CORS is open; `X-Image-Source` is exposed.
+- `/` returns 404 by design. Clients must call `/api/*`.
 
-## Why the current page still shows one poster
+## Client integration
 
-The page at `http://localhost:3000` is the Downloads build. Its episode cards
-still use the anime's single `artwork` image:
+Phone, PC, and TV clients should call the API directly. The production image
+does not serve `dist/` or any SPA assets.
 
-- `src/pages/AnimeDetailPage.tsx` around line 370: `src={artwork}`
-- `src/pages/WatchPage.tsx` around line 405: `src={artwork}`
-
-The backend cannot change the cards until the UI points each card at the new
-endpoint. After editing either file, run:
-
-```powershell
-npm run build
-```
-
-The gateway serves `dist/` per request, so no gateway restart is needed.
-
-The OneDrive UI at `:5178` is a separate copy. It needs the same change and,
-because it has no Vite proxy, should use `http://127.0.0.1:3000` as the API base
-in development.
+For local web development, the gateway can still serve a Vite build from
+`dist/` if one exists. The old web UI is not part of the production deployment;
+when Sol finishes it, it can be hosted separately.
 
 ## 1. Per-episode thumbnails
 
