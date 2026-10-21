@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: hanabi-anilab
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Cloud sync: injected into index.html at request time by server.py,
+      # so changing them never requires a rebuild. The anon key is a public
+      # client key; row-level security enforces per-user access.
+      - key: SUPABASE_URL
+        value: "https://anrnornvsesssscboqvg.supabase.co"
+      - key: SUPABASE_ANON_KEY
+        value: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFucm5vcm52c2Vzc3NzY2JvcXZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI0NDAzNDUsImV4cCI6MjEwODAxNjM0NX0.TPuywvPZ5u0dK88e9rgY-XYNdrX3OWP5tmy8-GviuVc"

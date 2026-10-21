@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="initial-scale=1, width=device-width" />
+    <title>Hanabi — Anime streaming</title>
+    <meta name="description" content="Hanabi is a cinematic anime catalogue and player: discover titles, track episodes, and stream where available." />
+    <meta name="theme-color" content="#0B0A0D" />
+    <meta name="color-scheme" content="dark light" />
+    <meta property="og:title" content="Hanabi — Anime streaming" />
+    <meta property="og:description" content="Discover, track, and stream anime in a cinematic interface." />
+    <script>
+      // Paint the correct background before React mounts to avoid a theme flash.
+      (function () {
+        try {
+          var mode = localStorage.getItem('anistream:theme');
+          document.documentElement.style.backgroundColor = mode === 'light' ? '#F6F1EA' : '#0B0A0D';
+        } catch (e) {
+          document.documentElement.style.backgroundColor = '#0B0A0D';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
