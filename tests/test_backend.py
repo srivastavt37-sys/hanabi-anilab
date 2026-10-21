@@ -184,6 +184,81 @@ def test_episode_titles_cleans_numbered_anilist_titles(monkeypatch):
     assert server._clean_episode_title("Episode 1", 1) == ""
 
 
+def test_anime_detail_falls_back_to_anizip_and_kitsu(monkeypatch):
+    mapping = {
+        "titles": {"en": "Cyberpunk: Edgerunners 2", "ja": "Cyberpunk: Edgerunners II"},
+        "episodes": {
+            "1": {
+                "episodeNumber": 1,
+                "title": {"en": "Last Chance for a Slow Dance"},
+                "overview": "A former edgerunner starts over.",
+                "runtime": 28,
+                "image": "https://example.com/episode-1.jpg",
+                "airDateUtc": "2026-10-20T07:00:00Z",
+            }
+        },
+        "episodeCount": 10,
+        "images": [
+            {"coverType": "Poster", "url": "https://example.com/poster.jpg"},
+            {"coverType": "Banner", "url": "https://example.com/banner.jpg"},
+        ],
+        "mappings": {"kitsu_id": 50016, "mal_id": 61990},
+    }
+    kitsu = {
+        "attributes": {
+            "canonicalTitle": "Cyberpunk: Edgerunners 2",
+            "synopsis": "A new crew takes on Night City.",
+            "subtype": "ONA",
+            "status": "finished",
+            "startDate": "2026-10-20",
+            "averageRating": "81.44",
+            "userCount": 1199,
+            "episodeLength": 28,
+            "youtubeVideoId": "urV5GzXcXsQ",
+            "titles": {"ja_jp": "Cyberpunk: Edgerunners II"},
+        },
+        "included": [
+            {"type": "categories", "attributes": {"slug": "science-fiction"}},
+            {"type": "categories", "attributes": {"slug": "action"}},
+        ],
+    }
+    monkeypatch.setattr(server, "_anizip_mapping", lambda _: mapping)
+    monkeypatch.setattr(server, "_kitsu_anime", lambda _: kitsu)
+
+    response = client.get("/api/anime-detail?anilistId=195539")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["sources"] == ["anizip", "kitsu"]
+    assert body["anime"]["id"] == "anilist-195539"
+    assert body["anime"]["title"] == "Cyberpunk: Edgerunners 2"
+    assert body["anime"]["episodeCount"] == 10
+    assert body["anime"]["format"] == "ONA"
+    assert body["anime"]["status"] == "finished"
+    assert body["anime"]["year"] == 2026
+    assert body["anime"]["genres"] == ["sci-fi", "action"]
+    assert body["anime"]["poster"] == "https://example.com/poster.jpg"
+    assert body["anime"]["cover"] == "https://example.com/banner.jpg"
+    assert body["episodes"][0]["title"] == "Last Chance for a Slow Dance"
+    assert body["episodes"][0]["thumbnail"] == "https://example.com/episode-1.jpg"
+    assert body["trailerUrl"] == "https://www.youtube.com/embed/urV5GzXcXsQ"
+
+
+def test_anime_detail_reports_unavailable_fallback(monkeypatch):
+    monkeypatch.setattr(server, "_anizip_mapping", lambda _: {})
+
+    response = client.get("/api/anime-detail?anilistId=195539")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Metadata fallback sources are unavailable"
+
+
+def test_anime_detail_rejects_invalid_id():
+    response = client.get("/api/anime-detail?anilistId=0")
+
+    assert response.status_code == 400
+
+
 def test_svg_is_not_accepted_as_remote_image():
     assert server._sniff_image_type(b"<svg></svg>", "image/svg+xml") is None
 

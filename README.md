@@ -77,6 +77,7 @@ python -m pytest tests -q
 | `GET /api/skip-times?anilistId=&episode=&duration=` | Intro/outro timestamps (AniSkip + local overrides) |
 | `GET /api/episode-image?anilistId=&episode=&width=` | Per-episode thumbnail (real still or generated fallback) |
 | `GET /api/episode-titles?anilistId=` | Episode titles (AniList streaming data + Kitsu fallback) |
+| `GET /api/anime-detail?anilistId=` | Anime metadata fallback for AniList outages (ani.zip + Kitsu) |
 | `GET /api/watch?m3u8=` | Standalone debug player page |
 
 Metadata responses are cached briefly in memory; stream lookups are cached for
@@ -154,6 +155,19 @@ Returns `{ "titles": { "1": "Last Chance for a Slow Dance", ... }, "sources": ["
 AniList `streamingEpisodes` titles are preferred when they contain a real title;
 Kitsu episode titles fill the gaps. Numbered placeholders such as `Episode 1`
 are omitted. Responses are cached for 6 hours.
+
+### Anime detail fallback
+
+`GET /api/anime-detail?anilistId=195539`
+
+Returns normalized anime metadata when the AniList GraphQL API is unavailable.
+The gateway maps the AniList id to MyAnimeList and Kitsu through
+`https://api.ani.zip`, then fills synopsis, status, format, rating, year,
+poster/cover, trailer, and categories from Kitsu. The response contains
+`anime`, `episodes`, `externalLinks`, `related`, `trailerUrl`, and `sources`
+(`anizip`, `kitsu`). Invalid ids return 400; a failed upstream returns 503.
+Responses are cached for 6 hours. Clients should only use this endpoint when
+their primary AniList query fails.
 
 ## Deploying to Render
 

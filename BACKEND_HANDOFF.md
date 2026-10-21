@@ -8,7 +8,7 @@ web UI source remains in the repo for reference only.
 - Production API: `https://hanabi-anilab.onrender.com`
 - API docs: `https://hanabi-anilab.onrender.com/docs`
 - Health: `https://hanabi-anilab.onrender.com/api/health`
-- 10 backend tests pass: `python -m pytest tests -q`.
+- 15 backend tests pass: `python -m pytest tests -q`.
 - Docker image builds and runs on Render; the image contains only the API
   (`server.py`, `requirements.txt`, `skip_times.json`), not the frontend.
 - Backend files are mirrored into the OneDrive copy.
@@ -185,6 +185,57 @@ const skip = () => {
 ```
 
 Do not show a disabled button when `available` is false. Hide it entirely.
+
+## 4. Anime detail fallback
+
+```http
+GET /api/anime-detail?anilistId=<id>
+```
+
+Use this only when the primary AniList GraphQL request fails. It allows the UI
+to keep rendering a detail page while the public AniList API is disabled.
+
+- Maps the AniList id via `https://api.ani.zip/mappings?anilist_id=`.
+- Fills metadata from Kitsu (`anime/{id}?include=categories,productions`).
+- Returns `anime`, `episodes`, `externalLinks`, `related`, `trailerUrl`, and
+  `sources` (`anizip`, `kitsu`).
+- Invalid ids return 400; a failed upstream returns 503.
+- Cached for 6 hours.
+
+Example:
+
+```json
+{
+  "anime": {
+    "id": "anilist-195539",
+    "title": "Cyberpunk: Edgerunners 2",
+    "status": "finished",
+    "format": "ONA",
+    "year": 2026,
+    "episodeCount": 10,
+    "genres": ["action", "crime", "drama", "sci-fi"],
+    "sources": ["anizip", "kitsu"]
+  },
+  "episodes": [
+    { "number": 1, "title": "Last Chance for a Slow Dance" }
+  ],
+  "externalLinks": [],
+  "related": [],
+  "trailerUrl": "https://www.youtube.com/watch?v=..."
+}
+```
+
+### React wiring
+
+```tsx
+try {
+  return await fetchAniListGraphQL(...);
+} catch {
+  const response = await fetch(`${apiBase}/api/anime-detail?anilistId=${id}`);
+  if (!response.ok) throw new Error('metadata fallback failed');
+  return response.json();
+}
+```
 
 ## Local overrides
 

@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 from xml.sax.saxutils import escape as xml_escape
@@ -42,6 +43,7 @@ ANIDB_BASE = "https://play.anidb.app"
 KYOTO_BASE = "https://app.kyotoplayer.com"
 ANISKIP_BASE = "https://api.aniskip.com"
 ANILIST_GRAPHQL = "https://graphql.anilist.co"
+ANIZIP_API = "https://api.ani.zip"
 KITSU_API = "https://kitsu.io/api/edge"
 
 APP_HEADERS = {
@@ -929,6 +931,401 @@ def _kitsu_episode_stills(kitsu_id: int) -> dict:
     }
 
 
+def _clean_text(value) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_date(value):
+    text = _clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _anizip_mapping(anilist_id: int) -> dict:
+    cache_key = f"anizip:mapping:{anilist_id}"
+    cached = cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+    try:
+        response = requests.get(
+            f"{ANIZIP_API}/mappings",
+            params={"anilist_id": anilist_id},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("unexpected payload")
+    except Exception as exc:
+        print(f"[fallback] ani.zip mapping failed for {anilist_id}: {exc}", file=sys.stderr)
+        return {}
+    cache_set(cache_key, payload, 6 * 3600)
+    return payload
+
+
+def _kitsu_anime(kitsu_id: int) -> dict:
+    cache_key = f"kitsu:anime:meta:{kitsu_id}"
+    cached = cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+    try:
+        response = requests.get(
+            f"{KITSU_API}/anime/{kitsu_id}",
+            params={"include": "categories,productions"},
+            headers={
+                "Accept": "application/vnd.api+json",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+        body = response.json()
+        data = body.get("data") or {}
+        result = {
+            "attributes": data.get("attributes") or {},
+            "included": body.get("included") or [],
+        }
+    except Exception as exc:
+        print(f"[fallback] Kitsu metadata failed for {kitsu_id}: {exc}", file=sys.stderr)
+        return {}
+    cache_set(cache_key, result, 6 * 3600)
+    return result
+
+
+def _image_url(value) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in ("large", "original", "medium", "small"):
+        url = _clean_text(value.get(key))
+        if url:
+            return url
+    return ""
+
+
+def _mapping_image(images, cover_type: str) -> str:
+    if not isinstance(images, list):
+        return ""
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("coverType") or "").lower() != cover_type.lower():
+            continue
+        url = _clean_text(item.get("url"))
+        if url:
+            return url
+    return ""
+
+
+def _fallback_genres(included) -> list[str]:
+    genres: list[str] = []
+    aliases = {"science-fiction": "sci-fi", "science fiction": "sci-fi"}
+    for item in included or []:
+        if not isinstance(item, dict) or item.get("type") not in ("categories", "genres"):
+            continue
+        attributes = item.get("attributes") or {}
+        value = attributes.get("slug") or attributes.get("title") or ""
+        slug = _clean_text(value).lower().replace("_", "-").replace(" ", "-")
+        slug = aliases.get(slug, slug)
+        if slug and slug not in genres:
+            genres.append(slug)
+    return genres[:8]
+
+
+def _fallback_status(attributes: dict, mapping: dict) -> str:
+    raw = str(attributes.get("status") or "").lower()
+    if raw in {"current", "airing", "releasing"}:
+        return "airing"
+    if raw in {"finished", "complete"}:
+        return "finished"
+    if raw in {"tba", "unreleased", "upcoming", "not_yet_released"}:
+        return "upcoming"
+
+    dates = []
+    raw_episodes = mapping.get("episodes")
+    if isinstance(raw_episodes, dict):
+        for item in raw_episodes.values():
+            if not isinstance(item, dict):
+                continue
+            parsed = _parse_date(item.get("airDateUtc") or item.get("airDate"))
+            if parsed:
+                dates.append(parsed)
+    if dates:
+        now = datetime.now(timezone.utc)
+        if all(value > now for value in dates):
+            return "upcoming"
+        if any(value > now for value in dates):
+            return "airing"
+    return "finished"
+
+
+def _fallback_season(attributes: dict, mapping: dict) -> str:
+    parsed = _parse_date(attributes.get("startDate"))
+    if not parsed:
+        raw_episodes = mapping.get("episodes")
+        if isinstance(raw_episodes, dict):
+            for item in raw_episodes.values():
+                if isinstance(item, dict):
+                    parsed = _parse_date(item.get("airDateUtc") or item.get("airDate"))
+                    if parsed:
+                        break
+    if not parsed:
+        return "Winter"
+    month = parsed.month
+    if month <= 3:
+        return "Winter"
+    if month <= 6:
+        return "Spring"
+    if month <= 9:
+        return "Summer"
+    return "Fall"
+
+
+def _fallback_episodes(
+    mapping: dict,
+    kitsu_id: int,
+    anime_id: str,
+    anime_title: str,
+    episode_count: int,
+    default_duration: int,
+) -> list[dict]:
+    episodes: list[dict] = []
+    seen: set[int] = set()
+    raw_episodes = mapping.get("episodes")
+
+    if isinstance(raw_episodes, dict):
+        for key, item in raw_episodes.items():
+            if not isinstance(item, dict):
+                continue
+            number = _as_int(
+                item.get("episodeNumber") or item.get("episode") or key,
+                0,
+            )
+            if number <= 0 or number in seen:
+                continue
+            seen.add(number)
+            title = item.get("title")
+            if isinstance(title, dict):
+                title = title.get("en") or title.get("x-jat") or title.get("ja")
+            title = _clean_episode_title(title, number) or f"Episode {number}"
+            synopsis = _clean_text(item.get("overview")) or f"Episode {number} of {anime_title}."
+            episodes.append(
+                {
+                    "id": f"{anime_id}-s1-e{number}",
+                    "seasonId": f"{anime_id}-season-1",
+                    "animeId": anime_id,
+                    "number": number,
+                    "title": title,
+                    "synopsis": synopsis,
+                    "durationMinutes": _as_int(item.get("runtime") or item.get("length"), default_duration),
+                    "thumbnail": _clean_text(item.get("image")) or None,
+                }
+            )
+
+    if not episodes and kitsu_id:
+        for number, item in _kitsu_episodes(kitsu_id).items():
+            if number <= 0 or number in seen:
+                continue
+            seen.add(number)
+            title = _clean_episode_title(item.get("title"), number) or f"Episode {number}"
+            episodes.append(
+                {
+                    "id": f"{anime_id}-s1-e{number}",
+                    "seasonId": f"{anime_id}-season-1",
+                    "animeId": anime_id,
+                    "number": number,
+                    "title": title,
+                    "synopsis": f"Episode {number} of {anime_title}.",
+                    "durationMinutes": default_duration,
+                    "thumbnail": _clean_text(item.get("url")) or None,
+                }
+            )
+
+    if not episodes:
+        for number in range(1, min(max(episode_count, 0), 200) + 1):
+            episodes.append(
+                {
+                    "id": f"{anime_id}-s1-e{number}",
+                    "seasonId": f"{anime_id}-season-1",
+                    "animeId": anime_id,
+                    "number": number,
+                    "title": f"Episode {number}",
+                    "synopsis": f"Episode {number} of {anime_title}.",
+                    "durationMinutes": default_duration,
+                    "thumbnail": None,
+                }
+            )
+
+    episodes.sort(key=lambda item: item["number"])
+    return episodes
+
+
+def _anime_detail_fallback(anilist_id: int) -> dict:
+    mapping = _anizip_mapping(anilist_id)
+    if not mapping:
+        raise HTTPException(status_code=503, detail="Metadata fallback sources are unavailable")
+
+    raw_mappings = mapping.get("mappings")
+    mappings = raw_mappings if isinstance(raw_mappings, dict) else {}
+    kitsu_id = _as_int(mappings.get("kitsu_id"), 0)
+    if not kitsu_id:
+        mal_id = _as_int(mappings.get("mal_id"), 0)
+        if mal_id:
+            kitsu_id = _kitsu_anime_id(mal_id) or 0
+
+    kitsu = _kitsu_anime(kitsu_id) if kitsu_id else {}
+    attributes = kitsu.get("attributes") or {}
+    included = kitsu.get("included") or []
+
+    titles = mapping.get("titles") if isinstance(mapping.get("titles"), dict) else {}
+    kitsu_titles = attributes.get("titles") if isinstance(attributes.get("titles"), dict) else {}
+    title = (
+        _clean_text(titles.get("en"))
+        or _clean_text(attributes.get("canonicalTitle"))
+        or _clean_text(kitsu_titles.get("en"))
+        or _clean_text(kitsu_titles.get("en_jp"))
+        or _clean_text(titles.get("x-jat"))
+        or _clean_text(titles.get("ja"))
+    )
+    if not title:
+        raise HTTPException(status_code=503, detail="Metadata fallback has no title")
+
+    native_title = (
+        _clean_text(titles.get("ja"))
+        or _clean_text(kitsu_titles.get("ja_jp"))
+        or title
+    )
+    synonyms: list[str] = []
+    for value in (
+        kitsu_titles.get("en_jp"),
+        kitsu_titles.get("ja_jp"),
+        titles.get("x-jat"),
+        titles.get("ja"),
+        *(attributes.get("abbreviatedTitles") or []),
+    ):
+        text = _clean_text(value)
+        if text and text.lower() != title.lower() and text not in synonyms:
+            synonyms.append(text)
+
+    anime_id = f"anilist-{anilist_id}"
+    slug_text = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "anime"
+    episode_count = _as_int(mapping.get("episodeCount") or attributes.get("episodeCount"), 0)
+    duration = _as_int(attributes.get("episodeLength"), 0)
+    episodes = _fallback_episodes(mapping, kitsu_id, anime_id, title, episode_count, duration)
+    episode_count = max(episode_count, len(episodes))
+
+    format_map = {
+        "tv": "TV",
+        "movie": "Movie",
+        "ona": "ONA",
+        "ova": "OVA",
+        "special": "Special",
+        "music": "Special",
+    }
+    raw_format = str(attributes.get("subtype") or "").lower()
+    anime_format = format_map.get(raw_format, "TV")
+
+    rating = _as_float(attributes.get("averageRating")) / 10
+    if rating <= 0:
+        ratings = []
+        raw_episodes = mapping.get("episodes")
+        if isinstance(raw_episodes, dict):
+            for item in raw_episodes.values():
+                if isinstance(item, dict):
+                    value = _as_float(item.get("rating"))
+                    if value > 0:
+                        ratings.append(value)
+        if ratings:
+            rating = sum(ratings) / len(ratings)
+
+    start_date = _parse_date(attributes.get("startDate"))
+    year = start_date.year if start_date else 0
+    if not year:
+        raw_episodes = mapping.get("episodes")
+        if isinstance(raw_episodes, dict):
+            for item in raw_episodes.values():
+                if isinstance(item, dict):
+                    parsed = _parse_date(item.get("airDateUtc") or item.get("airDate"))
+                    if parsed:
+                        year = parsed.year
+                        break
+
+    youtube_id = _clean_text(attributes.get("youtubeVideoId"))
+    poster = (
+        _image_url(attributes.get("posterImage"))
+        or _mapping_image(mapping.get("images"), "Poster")
+    )
+    cover = (
+        _image_url(attributes.get("coverImage"))
+        or _mapping_image(mapping.get("images"), "Banner")
+        or _mapping_image(mapping.get("images"), "Fanart")
+    )
+
+    status = _fallback_status(attributes, mapping)
+    anime = {
+        "id": anime_id,
+        "slug": f"{anilist_id}-{slug_text}",
+        "title": title,
+        "nativeTitle": native_title,
+        "synonyms": synonyms,
+        "synopsis": (
+            _clean_text(attributes.get("synopsis"))
+            or _clean_text(attributes.get("description"))
+            or "No synopsis available for this title yet."
+        ),
+        "status": status,
+        "format": anime_format,
+        "year": year,
+        "season": _fallback_season(attributes, mapping),
+        "rating": round(rating, 1),
+        "popularity": _as_int(attributes.get("userCount"), 0),
+        "episodeCount": episode_count,
+        "poster": poster,
+        "cover": cover or poster,
+        "genres": _fallback_genres(included),
+        "studio": "Unknown studio",
+        "upcoming": status == "upcoming",
+    }
+
+    sources = ["anizip"]
+    if attributes:
+        sources.append("kitsu")
+
+    return {
+        "anilistId": anilist_id,
+        "anime": anime,
+        "episodes": episodes,
+        "externalLinks": [],
+        "related": [],
+        "trailerUrl": f"https://www.youtube.com/embed/{youtube_id}" if youtube_id else "",
+        "sources": sources,
+    }
+
+
 def _episode_still_candidates(media: dict, episode: int):
     for item in media.get("streaming") or []:
         if item.get("number") == episode and item.get("url"):
@@ -1092,6 +1489,19 @@ def episode_titles(anilistId: int):
         "titles": titles,
         "sources": sorted(sources),
     }
+    cache_set(cache_key, result, 6 * 3600)
+    return result
+
+
+@app.get("/api/anime-detail")
+def anime_detail(anilistId: int):
+    if not (1 <= anilistId <= 1_000_000_000):
+        raise HTTPException(status_code=400, detail="anilistId is out of range")
+    cache_key = f"anime-detail:fallback:{anilistId}"
+    cached = cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+    result = _anime_detail_fallback(anilistId)
     cache_set(cache_key, result, 6 * 3600)
     return result
 
