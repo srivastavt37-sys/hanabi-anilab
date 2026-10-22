@@ -8,7 +8,8 @@ client = TestClient(server.app)
 
 
 @pytest.fixture(autouse=True)
-def clear_caches():
+def clear_caches(monkeypatch):
+    monkeypatch.setattr(server, "_anizip_mapping", lambda _: {})
     server._cache.clear()
     server._art_cache.clear()
     yield
@@ -101,7 +102,7 @@ def test_generated_images_differ_per_episode(monkeypatch):
     assert second.status_code == 200
     assert first.headers["x-image-source"] == "generated"
     assert first.headers["content-type"].startswith("image/svg+xml")
-    assert first.headers["cache-control"] == "public, max-age=86400"
+    assert first.headers["cache-control"] == "public, max-age=60"
     assert first.content != second.content
     assert b"Test &amp; &lt;Show&gt;" in first.content
 
@@ -140,6 +141,69 @@ def test_real_still_is_preferred(monkeypatch):
     assert response.headers["x-image-source"] == "anilist"
     assert response.headers["content-type"] == "image/jpeg"
     assert response.content == b"\xff\xd8\xff\xe0fake-jpeg"
+
+
+def test_episode_image_uses_mapping_still_when_anilist_is_unavailable(monkeypatch):
+    monkeypatch.setattr(server, "_anilist_art_media", lambda _: {})
+    monkeypatch.setattr(
+        server,
+        "_anizip_mapping",
+        lambda _: {
+            "titles": {"en": "Mapped anime"},
+            "episodes": {
+                "1": {"image": "https://example.com/episode-1.jpg"},
+                "2": {"image": "https://example.com/episode-2.jpg"},
+            },
+        },
+    )
+    fetched_urls = []
+
+    def fetch_image(url):
+        fetched_urls.append(url)
+        return {"bytes": b"\xff\xd8\xff\xe0mapped-still", "content_type": "image/jpeg"}
+
+    monkeypatch.setattr(server, "_fetch_image", fetch_image)
+    response = client.get("/api/episode-image?anilistId=195539&episode=2&width=320&v=2")
+
+    assert response.status_code == 200
+    assert response.headers["x-image-source"] == "anizip"
+    assert response.headers["cache-control"] == "public, max-age=86400"
+    assert response.content == b"\xff\xd8\xff\xe0mapped-still"
+    assert fetched_urls == ["https://example.com/episode-2.jpg"]
+
+
+def test_episode_image_retries_mapping_when_anilist_still_cannot_load(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_anilist_art_media",
+        lambda _: fake_media(streaming=[{"number": 1, "url": "https://example.com/offline.jpg", "source": "anilist"}]),
+    )
+    monkeypatch.setattr(
+        server,
+        "_anizip_mapping",
+        lambda _: {"episodes": {"1": {"image": "https://example.com/working.jpg"}}},
+    )
+    fetched_urls = []
+
+    def fetch_image(url):
+        fetched_urls.append(url)
+        if url.endswith("offline.jpg"):
+            return None
+        return {"bytes": b"\xff\xd8\xff\xe0mapped-still", "content_type": "image/jpeg"}
+
+    monkeypatch.setattr(server, "_fetch_image", fetch_image)
+    response = client.get("/api/episode-image?anilistId=195539&episode=1")
+
+    assert response.headers["x-image-source"] == "anizip"
+    assert fetched_urls == ["https://example.com/offline.jpg", "https://example.com/working.jpg"]
+
+
+def test_generated_image_does_not_pin_missing_still_for_a_day(monkeypatch):
+    monkeypatch.setattr(server, "_anilist_art_media", lambda _: fake_media())
+    client.get("/api/episode-image?anilistId=900000001&episode=1&width=320")
+    expires_at, _ = server._art_cache["episode-image:v2:900000001:1:320"]
+
+    assert 0 < expires_at - server.time.time() <= 60
 
 
 def test_episode_titles_uses_kitsu_when_anilist_has_none(monkeypatch):
@@ -279,4 +343,3 @@ def test_redirect_to_private_host_is_rejected(monkeypatch):
     monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: FakeResponse())
 
     assert server._fetch_image("https://example.com/image.jpg") is None
-

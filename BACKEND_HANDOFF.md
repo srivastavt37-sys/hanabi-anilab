@@ -8,7 +8,7 @@ web UI source remains in the repo for reference only.
 - Production API: `https://hanabi-anilab.onrender.com`
 - API docs: `https://hanabi-anilab.onrender.com/docs`
 - Health: `https://hanabi-anilab.onrender.com/api/health`
-- 15 backend tests pass: `python -m pytest tests -q`.
+- 18 backend tests pass: `python -m pytest tests -q`.
 - Docker image builds and runs on Render; the image contains only the API
   (`server.py`, `requirements.txt`, `skip_times.json`), not the frontend.
 - Backend files are mirrored into the OneDrive copy.
@@ -45,10 +45,12 @@ GET /api/episode-image?anilistId=<id>&episode=<n>&width=<160-960>
 - `width`: optional, default 480. It controls the generated fallback; real
   stills are served at source resolution.
 - Returns `image/jpeg`, `image/png`, or `image/svg+xml`.
-- Resolution order: AniList `streamingEpisodes`, then Kitsu thumbnails, then a
-  generated SVG card using the cover with a per-episode crop and number.
-- Cached for 24 hours.
-- `X-Image-Source` is `anilist`, `kitsu`, or `generated`.
+- Resolution order: AniList `streamingEpisodes`, Kitsu thumbnails, ani.zip
+  episode stills and Kitsu mappings, then a generated SVG card.
+- Real stills are cached for 24 hours; generated cards expire after 60 seconds.
+- `X-Image-Source` is `anilist`, `kitsu`, `anizip`, or `generated`.
+- Prefer `episodes[].thumbnail` when present. If it fails, use this endpoint.
+- Add `v=2` to image URLs to bypass previously cached placeholders.
 
 ### React wiring
 
@@ -56,7 +58,7 @@ GET /api/episode-image?anilistId=<id>&episode=<n>&width=<160-960>
 const apiBase = import.meta.env.DEV ? 'http://127.0.0.1:3000' : '';
 
 const episodeImageUrl = (anilistId: number, episode: number, width = 320) =>
-  `${apiBase}/api/episode-image?anilistId=${anilistId}&episode=${episode}&width=${width}`;
+  `${apiBase}/api/episode-image?anilistId=${anilistId}&episode=${episode}&width=${width}&v=2`;
 ```
 
 Use it on the episode card:
@@ -83,8 +85,9 @@ Open these directly:
 - `http://127.0.0.1:3000/api/episode-image?anilistId=16498&episode=1&width=480`
 - `http://127.0.0.1:3000/api/episode-image?anilistId=195539&episode=1&width=480`
 
-`185874` is Bleach TYBW: generated cards. `16498` is Attack on Titan: real
-AniList still. `195539` episode 1 is a Kitsu still; episode 2 is generated.
+`185874` is Bleach TYBW, `16498` is Attack on Titan, and `195539` is Cyberpunk:
+Edgerunners 2. Cyberpunk's ten episodes have distinct ani.zip/TVDB scene stills,
+including episode 2, even while the AniList API is unavailable.
 
 ## 2. Episode titles
 

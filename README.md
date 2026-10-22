@@ -138,14 +138,17 @@ to provide the missing side:
 
 `GET /api/episode-image?anilistId=195539&episode=2&width=480`
 
-Returns an episode still from AniList's streaming data first, then Kitsu, and
-falls back to a generated SVG card built from the cover art with a per-episode
-crop and episode number. Every episode resolves to a different image. Use the
+Returns an episode still from AniList's streaming data first, then Kitsu. If
+those sources fail, ani.zip supplies episode-specific TVDB stills and Kitsu
+mapping IDs independently of AniList. A generated SVG card is the last fallback.
+Every episode resolves to a different image. Use the
 URL directly as the episode card image; point it at the gateway origin when the
 UI runs on a separate dev server. `width` (160–960, default 480) controls the
 generated fallback; real stills are served at source resolution.
-`X-Image-Source` reports `anilist`, `kitsu`, or `generated`. Responses are
-cached for 24 hours.
+`X-Image-Source` reports `anilist`, `kitsu`, `anizip`, or `generated`. Real stills
+are cached for 24 hours; generated fallbacks expire after 60 seconds. Add `v=2`
+to image URLs to bypass placeholder responses cached before this fix. Clients
+can use `episodes[].thumbnail` directly, then this endpoint if that image fails.
 
 ### Episode titles
 

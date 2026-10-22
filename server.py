@@ -638,6 +638,7 @@ _art_lock = threading.Lock()
 _art_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _ART_CACHE_MAX = 96
 _ART_TTL = 24 * 3600
+_ART_PLACEHOLDER_TTL = 60
 
 
 def _art_get(key: str):
@@ -797,6 +798,7 @@ def _anilist_art_media(anilist_id: int) -> dict:
         media = (response.json().get("data") or {}).get("Media") or {}
     except Exception as exc:
         print(f"[art] AniList lookup failed for {anilist_id}: {exc}", file=sys.stderr)
+        cache_set(cache_key, {}, _ART_PLACEHOLDER_TTL)
         return {}
     titles = media.get("title") or {}
     cover = media.get("coverImage") or {}
@@ -1326,15 +1328,44 @@ def _anime_detail_fallback(anilist_id: int) -> dict:
     }
 
 
+def _anizip_art_media(anilist_id: int) -> dict:
+    mapping = _anizip_mapping(anilist_id)
+    if not mapping:
+        return {}
+    mappings = mapping.get("mappings") or {}
+    titles = mapping.get("titles") or {}
+    title = titles.get("en") or titles.get("x-jat") or titles.get("ja") or ""
+    poster = _mapping_image(mapping.get("images"), "Poster")
+    episodes = _fallback_episodes(mapping, 0, f"anilist-{anilist_id}", title, 0, 0)
+    return {
+        "id": anilist_id,
+        "idMal": _as_int(mappings.get("mal_id")) or None,
+        "kitsuId": _as_int(mappings.get("kitsu_id")) or None,
+        "title": title,
+        "cover": poster,
+        "coverLarge": poster,
+        "streaming": [
+            {
+                "number": item["number"],
+                "url": item["thumbnail"],
+                "title": item["title"],
+                "source": "anizip",
+            }
+            for item in episodes
+            if item.get("thumbnail")
+        ],
+    }
+
+
 def _episode_still_candidates(media: dict, episode: int):
     for item in media.get("streaming") or []:
         if item.get("number") == episode and item.get("url"):
             yield item
             break
+    kitsu_id = media.get("kitsuId")
     mal_id = media.get("idMal")
-    if not mal_id:
-        return
-    kitsu_id = _kitsu_anime_id(int(mal_id))
+    if not kitsu_id and mal_id:
+        kitsu_id = _kitsu_anime_id(int(mal_id))
     if not kitsu_id:
         return
     still = _kitsu_episode_stills(kitsu_id).get(episode)
@@ -1417,12 +1448,14 @@ def _episode_placeholder(media: dict, episode: int, width: int) -> dict:
 
 
 def _image_response(payload: dict) -> Response:
+    source = payload.get("source", "generated")
+    max_age = _ART_PLACEHOLDER_TTL if source == "generated" else _ART_TTL
     return Response(
         content=payload["bytes"],
         media_type=payload["content_type"],
         headers={
-            "Cache-Control": "public, max-age=86400",
-            "X-Image-Source": payload.get("source", "generated"),
+            "Cache-Control": f"public, max-age={max_age}",
+            "X-Image-Source": source,
         },
     )
 
@@ -1434,7 +1467,7 @@ def episode_image(anilistId: int, episode: int = 1, width: int = 480):
     if not (1 <= episode <= 10_000):
         raise HTTPException(status_code=400, detail="episode is out of range")
     width = max(160, min(width, 960))
-    cache_key = f"episode-image:{anilistId}:{episode}:{width}"
+    cache_key = f"episode-image:v2:{anilistId}:{episode}:{width}"
     cached = _art_get(cache_key)
     if cached:
         return _image_response(cached)
@@ -1445,8 +1478,17 @@ def episode_image(anilistId: int, episode: int = 1, width: int = 480):
             payload = {**fetched, "source": still.get("source", "external")}
             _art_set(cache_key, payload)
             return _image_response(payload)
+    mapped_media = _anizip_art_media(anilistId)
+    for still in _episode_still_candidates(mapped_media, episode):
+        fetched = _fetch_image(still["url"])
+        if fetched:
+            payload = {**fetched, "source": still.get("source", "external")}
+            _art_set(cache_key, payload)
+            return _image_response(payload)
+    if mapped_media:
+        media = {**mapped_media, **{key: value for key, value in media.items() if value}}
     payload = _episode_placeholder(media, episode, width)
-    _art_set(cache_key, payload)
+    _art_set(cache_key, payload, _ART_PLACEHOLDER_TTL)
     return _image_response(payload)
 
 
